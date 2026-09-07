@@ -58,6 +58,7 @@ func sanitizeLeakedOutput(text string) string {
 	out = leakedBOSMarkerPattern.ReplaceAllString(out, "")
 	out = leakedThoughtMarkerPattern.ReplaceAllString(out, "")
 	out = leakedMetaMarkerPattern.ReplaceAllString(out, "")
+	out = stripLeakedEPSEToolMarkup(out)
 	out = stripLeakedToolCallWrapperBlocks(out)
 	out = sanitizeLeakedAgentXMLBlocks(out)
 	return out
@@ -88,6 +89,46 @@ func stripLeakedToolCallWrapperBlocks(text string) string {
 			b.WriteString(text[tag.Start : tag.End+1])
 			pos = tag.End + 1
 			continue
+		}
+		pos = closeTag.End + 1
+	}
+	return b.String()
+}
+
+// stripLeakedEPSEToolMarkup removes EPSE tool-call shell markup that the
+// stream sieve may release as visible text when a tool block is truncated or
+// never resolves into a completed call. EPSE markup (<|EPSE|tool_calls>,
+// <|EPSE|invoke>, <|EPSE|parameter>) is never legitimate user content, so
+// complete blocks, stray tags, and truncated openings are all dropped here.
+// Canonical <tool_calls> markup is left to stripLeakedToolCallWrapperBlocks.
+func stripLeakedEPSEToolMarkup(text string) string {
+	if text == "" {
+		return text
+	}
+	var b strings.Builder
+	pos := 0
+	for pos < len(text) {
+		tag, ok := toolcall.FindToolMarkupTagOutsideIgnored(text, pos)
+		if !ok {
+			b.WriteString(text[pos:])
+			break
+		}
+		if tag.Start > pos {
+			b.WriteString(text[pos:tag.Start])
+		}
+		if !tag.EPSELike {
+			b.WriteString(text[tag.Start : tag.End+1])
+			pos = tag.End + 1
+			continue
+		}
+		if tag.Closing {
+			pos = tag.End + 1
+			continue
+		}
+		closeTag, ok := toolcall.FindMatchingToolMarkupClose(text, tag)
+		if !ok {
+			// Truncated EPSE block: drop the rest of the stream.
+			return b.String()
 		}
 		pos = closeTag.End + 1
 	}
